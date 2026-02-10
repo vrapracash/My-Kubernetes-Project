@@ -1,1 +1,152 @@
+repo structure 
 
+eks-platform-terraform/
+│
+├── environments/
+│   ├── dev/
+│   ├── uat/
+│   └── prod/
+│
+├── modules/
+│   ├── vpc/
+│   ├── eks/
+│   ├── nodegroups/
+│   ├── iam/
+│   ├── addons/
+│
+├── backend.tf
+├── providers.tf
+├── versions.tf
+├── variables.tf
+└── README.md
+
+backend.TF
+
+terraform {
+  backend "s3" {
+    bucket         = "org-terraform-state"
+    key            = "eks/uat/terraform.tfstate"
+    region         = "eu-west-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}
+
+
+pproviders.TF
+provider "aws" {
+  region = var.region
+}
+
+provider "kubernetes" {
+  host                   = module.eks.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  token                  = data.aws_eks_cluster_auth.this.token
+}
+
+versions.TF
+
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+environment/UAT/main.tf
+
+module "vpc" {
+  source  = "../../modules/vpc"
+  name    = "eks-uat"
+  region  = var.region
+}
+
+module "eks" {
+  source          = "../../modules/eks"
+  cluster_name    = "eks-uat-cluster"
+  vpc_id          = module.vpc.vpc_id
+  private_subnets = module.vpc.private_subnets
+}
+
+module "nodegroups" {
+  source       = "../../modules/nodegroups"
+  cluster_name = module.eks.cluster_name
+  subnets      = module.vpc.private_subnets
+}
+
+modules/eks/main.tf
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.0"
+
+  cluster_name    = var.cluster_name
+  cluster_version = "1.29"
+  vpc_id          = var.vpc_id
+  subnet_ids      = var.private_subnets
+
+  enable_irsa = true
+
+  eks_managed_node_groups = {}
+}
+
+modules/node group/main.tf
+
+module "node_group" {
+  source  = "terraform-aws-modules/eks/aws//modules/eks-managed-node-group"
+
+  cluster_name    = var.cluster_name
+  subnet_ids      = var.subnets
+
+  instance_types = ["t3.large"]
+  min_size       = 2
+  max_size       = 6
+  desired_size   = 3
+}
+
+
+
+.gitlab-ci.yaml
+
+stages:
+  - validate
+  - plan
+  - apply
+
+terraform_validate:
+  stage: validate
+  script:
+    - terraform init
+    - terraform validate
+
+terraform_plan:
+  stage: plan
+  script:
+    - terraform plan
+  artifacts:
+    paths:
+      - plan.out
+
+terraform_apply:
+  stage: apply
+  when: manual
+  script:
+    - terraform apply -auto-approve
+
+
+modules/addon/main.tf
+
+module "eks_addons" {
+  source  = "terraform-aws-modules/eks/aws//modules/eks-addons"
+
+  cluster_name = var.cluster_name
+
+  eks_addons = {
+    vpc-cni = {}
+    coredns = {}
+    kube-proxy = {}
+  }
+}
