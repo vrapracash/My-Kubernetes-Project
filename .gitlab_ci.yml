@@ -1,0 +1,31 @@
+stages:
+  - validate
+  - plan
+  - apply
+
+variables:
+  TF_ROOT: "environments/uat"
+
+terraform_validate:
+  stage: validate
+  image: hashicorp/terraform:1.6
+  script:
+    - cd $TF_ROOT
+    - terraform init
+    - terraform validate
+
+terraform_plan:
+  stage: plan
+  script:
+    - cd $TF_ROOT
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - $TF_ROOT/tfplan
+
+terraform_apply:
+  stage: apply
+  when: manual
+  script:
+    - cd $TF_ROOT
+    - terraform apply -auto-approve tfplan
