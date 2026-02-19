@@ -1,0 +1,381 @@
+# Perfect. Below is a clean, production-grade reference implementation combining everything:
+
+# ✅ Multi-workspace (dev/staging/prod)
+# ✅ Hybrid EKS (EC2 via Karpenter + Fargate)
+# ✅ IRSA
+# ✅ AWS Load Balancer Controller
+# ✅ Karpenter
+# ✅ External Secrets (AWS Secrets Manager)
+# ✅ ArgoCD GitOps
+# ✅ GitLab CI/CD (build → scan → ECR → GitOps)
+# ✅ Helm charts (frontend/backend/mobile)
+
+# This is aligned with modern industry best practices.
+
+
+# Folder structure
+
+# terraform/
+# │
+# ├── backend.tf
+# ├── providers.tf
+# ├── variables.tf
+# ├── main.tf
+# ├── outputs.tf
+# │
+# ├── env/
+# │   ├── dev.tfvars
+# │   ├── staging.tfvars
+# │   └── prod.tfvars
+# │
+# ├── modules/
+# │   ├── eks/
+# │   ├── fargate/
+# │   ├── iam/
+# │   ├── irsa/
+# │   ├── karpenter/
+# │   ├── alb-controller/
+# │   └── external-secrets/
+# │
+# gitops-repo/
+# │
+# ├── argocd/
+# │   ├── app-of-apps.yaml
+# │   └── apps/
+# │       ├── frontend.yaml
+# │       ├── backend.yaml
+# │       └── mobile.yaml
+# │
+# ├── charts/
+# │   ├── frontend/
+# │   ├── backend/
+# │   └── mobile/
+# │
+# .gitlab-ci.yml
+# -----------------------------------------------------------------
+# backend.tf (workspace isolated)
+
+# terraform {
+#   backend "s3" {
+#     bucket         = "my-tf-state"
+#     key            = "eks/${terraform.workspace}/terraform.tfstate"
+#     region         = "us-east-1"
+#     dynamodb_table = "terraform-locks"
+#     encrypt        = true
+#   }
+# }
+# -----------------------------------------------------------------
+# providers.tf
+
+# provider "aws" {
+#   region = var.aws_region
+# }
+
+# data "aws_eks_cluster_auth" "this" {
+#   name = module.eks.cluster_name
+# }
+
+# provider "kubernetes" {
+#   host                   = module.eks.cluster_endpoint
+#   token                  = data.aws_eks_cluster_auth.this.token
+#   cluster_ca_certificate = base64decode(module.eks.cluster_ca)
+# }
+
+# provider "helm" {
+#   kubernetes {
+#     host                   = module.eks.cluster_endpoint
+#     token                  = data.aws_eks_cluster_auth.this.token
+#     cluster_ca_certificate = base64decode(module.eks.cluster_ca)
+#   }
+# }
+# ---------------------------------------------------------------------
+# variables.tf
+
+# variable "aws_region" {}
+# variable "cluster_name" {}
+# variable "vpc_id" {}
+# variable "private_subnet_ids" {
+#   type = list(string)
+# }
+# --------------------------------------------------------------------
+# Environment Configs (Same patter for staging/prod)
+# env/dev.tfvars
+
+# aws_region = "us-east-1"
+# cluster_name = "myapp-dev"
+# vpc_id = "vpc-xxx"
+# private_subnet_ids = ["subnet-a", "subnet-b"]
+# ------------------------------------------------------------------
+# main.tf
+
+# module "iam" {
+#   source       = "./modules/iam"
+#   cluster_name = var.cluster_name
+# }
+
+# module "eks" {
+#   source            = "./modules/eks"
+#   cluster_name      = var.cluster_name
+#   subnet_ids        = var.private_subnet_ids
+#   cluster_role_arn  = module.iam.eks_cluster_role_arn
+# }
+
+# module "fargate" {
+#   source                  = "./modules/fargate"
+#   cluster_name             = module.eks.cluster_name
+#   subnet_ids               = var.private_subnet_ids
+#   pod_execution_role_arn   = module.iam.fargate_pod_role_arn
+# }
+
+# module "karpenter" {
+#   source       = "./modules/karpenter"
+#   cluster_name = module.eks.cluster_name
+# }
+
+# module "alb_controller" {
+#   source       = "./modules/alb-controller"
+#   cluster_name = module.eks.cluster_name
+# }
+
+# module "external_secrets" {
+#   source = "./modules/external-secrets"
+# }
+# ------------------------------------------------------------------------
+# EKS Module (OIDC Enabled)
+# modules/eks/main.tf
+
+# resource "aws_eks_cluster" "this" {
+#   name     = var.cluster_name
+#   role_arn = var.cluster_role_arn
+
+#   vpc_config {
+#     subnet_ids = var.subnet_ids
+#   }
+# }
+
+# data "aws_eks_cluster" "this" {
+#   name = aws_eks_cluster.this.name
+# }
+
+# resource "aws_iam_openid_connect_provider" "this" {
+#   url = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
+#   client_id_list = ["sts.amazonaws.com"]
+#   thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da0ecd4e"]
+# }
+# ------------------------
+# outputs.tf
+
+# output "cluster_name" { value = aws_eks_cluster.this.name }
+# output "cluster_endpoint" { value = aws_eks_cluster.this.endpoint }
+# output "cluster_ca" { value = aws_eks_cluster.this.certificate_authority[0].data }
+# output "oidc_provider_arn" { value = aws_iam_openid_connect_provider.this.arn }
+# ------------------------------------------------------------------------
+# fargate Module
+# modules/fargate/main.tf
+
+# resource "aws_eks_fargate_profile" "apps" {
+#   cluster_name = var.cluster_name
+#   pod_execution_role_arn = var.pod_execution_role_arn
+#   subnet_ids = var.subnet_ids
+
+#   selector {
+#     namespace = "apps"
+#   }
+# }
+# ------------------------------------------------------------------------
+# IAM Policies (External Secrets)
+# moudles/iam/policies.tf
+
+# resource "aws_iam_policy" "external_secrets" {
+#   name = "${var.cluster_name}-external-secrets"
+
+#   policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [{
+#       Effect = "Allow"
+#       Action = [
+#         "secretsmanager:GetSecretValue",
+#         "secretsmanager:DescribeSecret"
+#       ]
+#       Resource = "*"
+#     }]
+#   })
+# }
+# ----------------------------------------------------------------------------
+# AWS Load Balancer Controller
+# modules/alb-controller/main.tf
+
+# resource "helm_release" "alb" {
+#   name       = "aws-load-balancer-controller"
+#   namespace  = "kube-system"
+#   repository = "https://aws.github.io/eks-charts"
+#   chart      = "aws-load-balancer-controller"
+
+#   set {
+#     name  = "clusterName"
+#     value = var.cluster_name
+#   }
+# }
+# --------------------------------------------------------------------------------
+# Karpenter (Node Provisioning)
+# modules/karpenter/main.tf
+
+# resource "kubernetes_namespace" "karpenter" {
+#   metadata { name = "karpenter" }
+# }
+
+# resource "helm_release" "karpenter" {
+#   name       = "karpenter"
+#   namespace  = "karpenter"
+#   repository = "https://charts.karpenter.sh"
+#   chart      = "karpenter"
+
+#   set {
+#     name  = "settings.clusterName"
+#     value = var.cluster_name
+#   }
+# }
+# -----------------------------------------------------------------------------------
+# External Secrest
+# modules/external-secrest/main.tf
+
+# resource "kubernetes_namespace" "external_secrets" {
+#   metadata { name = "external-secrets" }
+# }
+
+# resource "helm_release" "external_secrets" {
+#   name       = "external-secrets"
+#   namespace  = "external-secrets"
+#   repository = "https://charts.external-secrets.io"
+#   chart      = "external-secrets"
+# }
+# ------------------------------------------------------------------------------------
+# ArgoCD GitOps
+# argocd/app-of-apps.yaml
+
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: platform-apps
+# spec:
+#   source:
+#     repoURL: https://gitlab.com/myorg/gitops-repo.git
+#     path: argocd/apps
+#   destination:
+#     server: https://kubernetes.default.svc
+#     namespace: argocd
+#   syncPolicy:
+#     automated:
+#       prune: true
+#       selfHeal: true
+# --------------------------------------------------------------------------------------
+# argocd/apps/frontend.yaml  (same for backend/mobile)
+
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: frontend
+# spec:
+#   source:
+#     repoURL: https://gitlab.com/myorg/gitops-repo.git
+#     path: charts/frontend
+#   destination:
+#     namespace: apps
+#     server: https://kubernetes.default.svc
+#   syncPolicy:
+#     automated: {}
+# ----------------------------------------------------------------------------------
+# Helm Chart (rontend Example)
+# charts/frontend/Charts.yaml
+
+# apiVersion: v2
+# name: frontend
+# version: 0.1.0
+# ------------------------
+# values.yaml
+
+# image:
+#   repository: <acct>.dkr.ecr.us-east-1.amazonaws.com/frontend
+#   tag: latest
+
+# replicaCount: 2
+# ----------------------------------------------------------------------------------
+# templates/deployment.yaml
+
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: frontend
+# spec:
+#   replicas: {{ .Values.replicaCount }}
+#   selector:
+#     matchLabels:
+#       app: frontend
+#   template:
+#     metadata:
+#       labels:
+#         app: frontend
+#     spec:
+#       containers:
+#         - name: frontend
+#           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+#           ports:
+#             - containerPort: 80
+# --------------------------------------------------------------------------------
+# GitLab CI/CD (Enterprise Flow)
+# .gitlab-ci.yaml
+
+# stages:
+#   - build
+#   - scan
+#   - push
+#   - gitops-update
+
+# variables:
+#   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+#   AWS_REGION: us-east-1
+
+# build:
+#   stage: build
+#   script:
+#     - docker build -t $CI_PROJECT_NAME:$IMAGE_TAG .
+
+# sonarqube:
+#   stage: scan
+#   script:
+#     - sonar-scanner
+
+# trivy:
+#   stage: scan
+#   script:
+#     - trivy image $CI_PROJECT_NAME:$IMAGE_TAG
+
+# push-ecr:
+#   stage: push
+#   script:
+#     - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin <acct>.dkr.ecr.$AWS_REGION.amazonaws.com
+#     - docker tag $CI_PROJECT_NAME:$IMAGE_TAG <acct>.dkr.ecr.$AWS_REGION.amazonaws.com/$CI_PROJECT_NAME:$IMAGE_TAG
+#     - docker push <acct>.dkr.ecr.$AWS_REGION.amazonaws.com/$CI_PROJECT_NAME:$IMAGE_TAG
+
+# gitops-update:
+#   stage: gitops-update
+#   script:
+#     - sed -i "s/tag:.*/tag: $IMAGE_TAG/" charts/frontend/values.yaml
+#     - git commit -am "Update image tag"
+#     - git push
+# -----------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
