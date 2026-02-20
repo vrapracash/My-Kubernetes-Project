@@ -285,7 +285,7 @@
 #   syncPolicy:
 #     automated: {}
 # ----------------------------------------------------------------------------------
-# Helm Chart (rontend Example)
+# Helm Chart (frontend Example)
 # charts/frontend/Charts.yaml
 
 # apiVersion: v2
